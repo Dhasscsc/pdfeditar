@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="ta">
+<head>
+    <meta charset="UTF-8">
+    <title>Ultimate PDF Editor - Pro Version</title>
+    <link href="https://fonts.googleapis.com/css2?family=Lohit+Tamil&family=Pavanam&family=Hind+Madurai&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf_viewer.min.css">
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #1e272e; margin: 0; color: white; overflow: hidden; display: flex; flex-direction: column; height: 100vh; }
+        .toolbar { background: #2f3542; padding: 10px; display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; z-index: 1000; box-shadow: 0 2px 10px black; }
+        .tool-group { display: flex; align-items: center; gap: 5px; background: #57606f; padding: 5px 10px; border-radius: 8px; }
+        #editor-container { flex: 1; overflow: auto; padding: 40px; background: #747d8c; display: flex; justify-content: center; }
+        #canvas-wrapper { position: relative; background: white; box-shadow: 0 0 40px rgba(0,0,0,0.5); }
+        
+        .textLayer { position: absolute; left: 0; top: 0; right: 0; bottom: 0; opacity: 0.2; z-index: 2; }
+        .textLayer span { color: transparent; position: absolute; white-space: pre; cursor: pointer; }
+        .textLayer span:hover { background: rgba(255, 165, 0, 0.3); border: 1px solid orange; }
+
+        canvas { display: block; z-index: 1; }
+
+        /* Editable Items */
+        .editable-item { position: absolute; cursor: move; border: 1px dashed #3498db; background: white; z-index: 10; display: inline-flex; align-items: center; box-sizing: border-box; min-width: 20px; }
+        .text-input { border: none; padding: 0; margin: 0; color: black; outline: none; background: transparent; width: 100%; white-space: nowrap; }
+        
+        .white-out, .image-item { background: white; border: 1px solid #ced4da; resize: both; overflow: hidden; min-width: 30px; min-height: 30px; }
+        .image-item img { width: 100%; height: 100%; pointer-events: none; object-fit: contain; }
+
+        .no-border { border: none !important; background: transparent !important; }
+
+        .floating-tools { 
+            position: absolute; top: -50px; left: 0; background: #2f3542; 
+            padding: 8px; border-radius: 8px; display: none; gap: 8px; z-index: 100;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.6); align-items: center;
+        }
+        .editable-item:focus-within .floating-tools { display: flex; }
+        .size-input { width: 45px; padding: 4px; border-radius: 4px; border: 1px solid #ccc; text-align: center; font-weight: bold; }
+
+        #guide-v, #guide-h { position: absolute; background: rgba(255, 71, 87, 0.6); display: none; pointer-events: none; z-index: 99; }
+        #guide-v { width: 1px; height: 100%; }
+        #guide-h { height: 1px; width: 100%; }
+
+        button, select { padding: 6px 12px; border-radius: 4px; border: none; cursor: pointer; font-weight: bold; }
+        .btn-blue { background: #1e90ff; color: white; }
+        .btn-green { background: #2ed573; color: white; }
+        .btn-red { background: #ff4757; color: white; }
+    </style>
+</head>
+<body>
+
+<div class="toolbar">
+    <div class="tool-group">
+        <button class="btn-blue" onclick="document.getElementById('pdf-upload').click()">📂 PDF</button>
+        <input type="file" id="pdf-upload" accept="application/pdf" style="display:none">
+    </div>
+    <div class="tool-group">
+        <button onclick="changePage(-1)">◀</button>
+        <span id="page-info">0 / 0</span>
+        <button onclick="changePage(1)">▶</button>
+    </div>
+    <div class="tool-group">
+        <button onclick="currentMode='text'">✎ Text</button>
+        <button onclick="currentMode='whiteout'">▭ White-out</button>
+        <button onclick="document.getElementById('img-input').click()">🖼 Image சேர்க்க</button>
+        <input type="file" id="img-input" accept="image/*" style="display:none" onchange="addNewImage(event)">
+    </div>
+    <button class="btn-red" onclick="deleteSelected()">🗑 நீக்கு</button>
+    <button class="btn-green" onclick="saveFinalPDF()">✅ சேமி</button>
+</div>
+
+<div id="editor-container">
+    <div id="canvas-wrapper">
+        <div id="guide-v"></div>
+        <div id="guide-h"></div>
+        <canvas id="pdf-canvas"></canvas>
+        <div id="text-layer" class="textLayer"></div>
+    </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+
+<script>
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+    let pdfDoc = null, pageNum = 1, currentMode = 'text', selectedEl = null;
+    const canvas = document.getElementById('pdf-canvas');
+    const wrapper = document.getElementById('canvas-wrapper');
+    const textLayerDiv = document.getElementById('text-layer');
+    const gV = document.getElementById('guide-v'), gH = document.getElementById('guide-h');
+
+    document.getElementById('pdf-upload').addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = async function() {
+            pdfDoc = await pdfjsLib.getDocument(new Uint8Array(this.result)).promise;
+            renderPage(pageNum);
+        };
+        reader.readAsArrayBuffer(file);
+    });
+
+    async function renderPage(num) {
+        const page = await pdfDoc.getPage(num);
+        const viewport = page.getViewport({ scale: 1.5 });
+        canvas.height = viewport.height; canvas.width = viewport.width;
+        wrapper.style.width = viewport.width + 'px'; wrapper.style.height = viewport.height + 'px';
+        await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+        textLayerDiv.innerHTML = '';
+        const textContent = await page.getTextContent();
+        await pdfjsLib.renderTextLayer({ textContent, container: textLayerDiv, viewport, textDivs: [] }).promise;
+        document.querySelectorAll('.textLayer span').forEach(span => {
+            span.onclick = () => replaceWithStyle(span);
+        });
+        document.getElementById('page-info').innerText = `${num} / ${pdfDoc.numPages}`;
+    }
+
+    function replaceWithStyle(spanEl) {
+        const rect = spanEl.getBoundingClientRect();
+        const wrapperRect = wrapper.getBoundingClientRect();
+        const style = window.getComputedStyle(spanEl);
+        createEditableItem(rect.left - wrapperRect.left, rect.top - wrapperRect.top, spanEl.innerText, style.fontSize, style.fontFamily, rect.width + 20, rect.height);
+    }
+
+    wrapper.addEventListener('dblclick', (e) => {
+        if (e.target !== canvas && e.target !== textLayerDiv) return;
+        const rect = wrapper.getBoundingClientRect();
+        createEditableItem(e.clientX - rect.left, e.clientY - rect.top, "", "20px", "Arial", 150, 30);
+    });
+
+    function createEditableItem(x, y, val, fSize, fFamily, w, h) {
+        const container = document.createElement('div');
+        container.className = 'editable-item';
+        
+        if (currentMode === 'whiteout') {
+            container.className += ' white-out';
+            container.style.width = "100px"; container.style.height = "25px";
+        } else {
+            container.style.width = "auto"; 
+            const tools = document.createElement('div');
+            tools.className = 'floating-tools';
+            tools.innerHTML = `
+                <input type="number" class="size-input" value="${parseInt(fSize)}" onchange="this.parentElement.nextElementSibling.style.fontSize=this.value+'px'">
+                <button style="background:#f1c40f" onclick="const i=this.parentElement.nextElementSibling; i.style.fontWeight=i.style.fontWeight==='bold'?'normal':'bold'">B</button>
+                <select onchange="this.parentElement.nextElementSibling.style.fontFamily=this.value">
+                    <option value="${fFamily}">Original</option>
+                    <option value="'Lohit Tamil'">Tamil</option>
+                    <option value="Arial">Arial</option>
+                </select>
+            `;
+            const input = document.createElement('input');
+            input.className = 'text-input';
+            input.value = val; 
+            input.style.fontSize = fSize; 
+            input.style.fontFamily = fFamily;
+            
+            // தானாக நீளம் கூடும் வசதி
+            input.oninput = function() {
+                this.style.width = "0px"; 
+                this.style.width = (this.scrollWidth + 10) + "px";
+                this.parentElement.style.width = (this.scrollWidth + 15) + "px";
+            };
+            
+            container.appendChild(tools);
+            container.appendChild(input);
+            // லோடு ஆகும் போதே அளவை சரிசெய்ய
+            setTimeout(() => input.oninput(), 10);
+        }
+        
+        container.style.left = x + 'px'; container.style.top = y + 'px';
+        attachEvents(container);
+        wrapper.appendChild(container);
+        if (container.querySelector('input')) container.querySelector('input').focus();
+    }
+
+    function addNewImage(e) {
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            const el = document.createElement('div');
+            el.className = 'editable-item image-item';
+            el.style.width = "150px"; el.style.height = "100px";
+            el.style.left = "100px"; el.style.top = "100px";
+            const img = document.createElement('img');
+            img.src = ev.target.result; el.appendChild(img);
+            attachEvents(el); wrapper.appendChild(el);
+        };
+        reader.readAsDataURL(e.target.files[0]);
+    }
+
+    function attachEvents(el) {
+        el.onmousedown = function(e) {
+            selectedEl = el;
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.offsetX > el.offsetWidth - 20 && e.offsetY > el.offsetHeight - 20) return;
+            let sX = e.clientX - el.offsetLeft, sY = e.clientY - el.offsetTop;
+            gV.style.display = 'block'; gH.style.display = 'block';
+            document.onmousemove = (ev) => {
+                let left = ev.clientX - wrapper.getBoundingClientRect().left - sX;
+                let top = ev.clientY - wrapper.getBoundingClientRect().top - sY;
+                el.style.left = left + 'px'; el.style.top = top + 'px';
+                gV.style.left = left + 'px'; gH.style.top = top + 'px';
+            };
+            document.onmouseup = () => { document.onmousemove = null; gV.style.display = 'none'; gH.style.display = 'none'; };
+        };
+    }
+
+    function changePage(delta) {
+        if (!pdfDoc || pageNum + delta < 1 || pageNum + delta > pdfDoc.numPages) return;
+        pageNum += delta; renderPage(pageNum);
+    }
+
+    function deleteSelected() { if (selectedEl) selectedEl.remove(); }
+
+    async function saveFinalPDF() {
+        const items = document.querySelectorAll('.editable-item');
+        items.forEach(item => item.classList.add('no-border'));
+        textLayerDiv.style.display = 'none';
+        const finalCanvas = await html2canvas(wrapper, { scale: 2, useCORS: true });
+        items.forEach(item => item.classList.remove('no-border'));
+        textLayerDiv.style.display = 'block';
+        const doc = new jspdf.jsPDF({ orientation: canvas.width > canvas.height ? 'l' : 'p', unit: 'px', format: [canvas.width, canvas.height] });
+        doc.addImage(finalCanvas.toDataURL('image/png'), 'PNG', 0, 0, canvas.width, canvas.height);
+        doc.save("Professional_PDF_Edit.pdf");
+    }
+</script>
+</body>
+</html>
